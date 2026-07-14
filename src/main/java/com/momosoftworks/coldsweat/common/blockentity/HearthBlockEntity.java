@@ -1174,7 +1174,7 @@ public class HearthBlockEntity extends RandomizableContainerBlockEntity implemen
             BlockPos pos = entry.getKey();
             boolean isBlocked = entry.getValue().getSecond();
             if (isBlocked) continue;
-            Direction face = entry.getValue().getFirst();
+            Direction face = entry.getValue().getFirst().getOpposite();
             if (this.usingColdFuel)
             {
                 if (rand.nextDouble() < CSMath.blend(0, 0.2, this.getColdFuel(), 0, this.getMaxFuel()))
