@@ -111,6 +111,8 @@ public class HearthBlockEntity extends RandomizableContainerBlockEntity implemen
     Map<Pair<Integer, Integer>, Pair<Integer, Boolean>> seeSkyMap = new HashMap<>(this.getMaxPaths());
     int partitionSize = CSMath.clamp(this.getMaxPaths() / 3, 100, 4000);
     int spreadIndex = 0;
+    // Number Pipes/smokestacks that are connected to the hearth
+    int numConnectedTransferPipes = 0;
 
     List<MobEffectInstance> effects = new ArrayList<>();
 
@@ -388,8 +390,18 @@ public class HearthBlockEntity extends RandomizableContainerBlockEntity implemen
                 }
 
                 if (paths.isEmpty())
-                {   this.addPath(new SpreadPath(pos.above(), pos.above()));
-                    this.searchForPipeEnds(this.getBlockPos().above(), Direction.UP);
+                {
+                    if (this.hasSmokestack)
+                    {
+                        searchForPipeEnds(this.getBlockPos().above(), Direction.UP);
+                        pipeEnds.forEach((pipeEndPos, pipeEndDir) ->
+                            this.addPath(new SpreadPath(pipeEndPos.relative(pipeEndDir), pipeEndDir, pipeEndPos)));
+                        spreadIndex += numConnectedTransferPipes + 1; // 1 comes from the block above the hearth
+                    }
+                    else
+                    {
+                        this.addPath(new SpreadPath(pos.above(), pos.above()));
+                    }
                 }
 
                 int prevPathCount = paths.size();
@@ -498,9 +510,7 @@ public class HearthBlockEntity extends RandomizableContainerBlockEntity implemen
      */
     private void visitNeighbors(Level level, SpreadPath path)
     {
-        if (workingChunk == null || !workingChunk.getPos().equals(new ChunkPos(path.pos)))
-        {   workingChunk = WorldHelper.getChunk(level, path.pos);
-        }
+        setWorkingChunk(path.pos);
         BlockState state = workingChunk != null ? workingChunk.getBlockState(path.pos) : level.getBlockState(path.pos);
 
         for (Direction direction : DIRECTIONS) {
@@ -788,38 +798,6 @@ public class HearthBlockEntity extends RandomizableContainerBlockEntity implemen
 
     protected boolean canSpread(Level level, BlockPos fromPos, BlockPos toPos, BlockState fromState, Direction fromDirection, Direction toDirection, SpreadPath newPath)
     {
-        Block fromBlock = fromState.getBlock();
-        if (fromBlock instanceof SmokestackBlock)
-        {
-            SmokestackBlock.Facing facing = fromState.getValue(SmokestackBlock.FACING);
-            boolean isJunction = facing == SmokestackBlock.Facing.BEND;
-
-            BlockState toState = level.getBlockState(toPos);
-            boolean isToSmokestack = toState.getBlock() instanceof SmokestackBlock;
-            SmokestackBlock.Facing toFacing = isToSmokestack ? toState.getValue(SmokestackBlock.FACING) : null;
-
-            // Spreading from a junction
-            if (isJunction)
-            {   return isToSmokestack && (toFacing == SmokestackBlock.Facing.BEND || toFacing.getAxis() == toDirection.getAxis());
-            }
-            // Spreading from a directional smokestack
-            else if (facing.getAxis() == toDirection.getAxis())
-            {
-                newPath.setOrigin(toPos);
-                return true;
-            }
-            return false;
-        }
-        else if (CompatManager.isCreateLoaded())
-        {
-            if ((fromBlock instanceof FluidPipeBlock && fromState.getValue(PipeBlock.PROPERTY_BY_DIRECTION.get(toDirection)))
-            || (fromBlock instanceof GlassFluidPipeBlock && fromState.getValue(RotatedPillarBlock.AXIS) == toDirection.getAxis())
-            || (fromBlock instanceof EncasedPipeBlock && fromState.getValue(EncasedPipeBlock.FACING_TO_PROPERTY_MAP.get(toDirection))))
-            {
-                newPath.setOrigin(toPos);
-                return true;
-            }
-        }
         return !WorldHelper.isSpreadBlocked(level, fromState, fromPos, fromDirection, toDirection);
     }
 
@@ -862,30 +840,59 @@ public class HearthBlockEntity extends RandomizableContainerBlockEntity implemen
     {
         if (this.hasSmokestack && this.level != null)
         {   this.pipeEnds.clear();
-            searchForPipeEndsRecursive(startPos, level.getBlockState(startPos), fromDir, new HashSet<>());
+            this.numConnectedTransferPipes = 0;
+            searchForPipeEndsBFS(startPos, fromDir);
         }
     }
 
-    protected void searchForPipeEndsRecursive(BlockPos pos, BlockState state, Direction fromDir, Set<BlockPos> visited)
+    private void searchForPipeEndsBFS(BlockPos initialPos, Direction initialDir)
     {
-        visited.add(pos);
-
-        for (int d = 0; d < DIRECTIONS.length; d++)
+        // The position of a pipe and the direction of the pipe leading into it
+        record PipePos(BlockPos pos, Direction direction) {}
+        Set<BlockPos> visited = new HashSet<>();
+        visited.add(initialPos);
+        Queue<PipePos> queue = new ArrayDeque<>();
+        queue.add(new PipePos(initialPos, initialDir));
+        paths.add(new SpreadPath(initialPos, initialDir, this.getBlockPos()));
+        while (!queue.isEmpty())
         {
-            Direction direction = DIRECTIONS[d];
-            if (direction == fromDir.getOpposite()) continue;
+            PipePos cur = queue.remove();
+            setWorkingChunk(cur.pos);
+            BlockState fromState = (workingChunk != null)
+                    ? workingChunk.getBlockState(cur.pos)
+                    : level.getBlockState(cur.pos);
 
-            BlockPos tryPos = pos.relative(direction);
-            if (visited.contains(tryPos) || !CSMath.withinCubeDistance(this.getBlockPos(), tryPos, this.getMaxRange())) continue;
+            for (Direction direction : DIRECTIONS)
+            {
+                if (cur.direction == direction.getOpposite()) continue;
+                BlockPos tryPos = cur.pos.relative(direction);
+                if (visited.contains(tryPos)) continue;
+                visited.add(tryPos);
+                if (!CSMath.withinCubeDistance(this.getBlockPos(), tryPos, this.getMaxRange())) continue;
 
-            BlockState otherState = level.getBlockState(tryPos);
-            if (isTransferPipe(otherState) && connectsTo(state, otherState, direction))
-            {   searchForPipeEndsRecursive(tryPos, otherState, direction, visited);
+                BlockState otherState = workingChunk != null && WorldHelper.adjacentInSameChunk(cur.pos, direction)
+                        ? workingChunk.getBlockState(tryPos)
+                        : level.getBlockState(tryPos);
+
+                if (isTransferPipe(otherState) && connectsTo(fromState, otherState, direction))
+                {
+                    queue.add(new PipePos(tryPos, direction));
+                    this.addPath(new SpreadPath(tryPos, direction, this.getBlockPos()));
+                    numConnectedTransferPipes++;
+                }
+                else if (!WorldHelper.isSpreadBlocked(level, otherState, tryPos, cur.direction.getOpposite(), direction)
+                    && pipePointingTo(fromState, otherState, direction))
+                {
+                    this.pipeEnds.put(tryPos, direction.getOpposite());
+                }
             }
-            else if (!WorldHelper.isSpreadBlocked(level, otherState, tryPos, fromDir.getOpposite(), direction)
-            && pipePointingTo(state, otherState, direction))
-            {   this.pipeEnds.put(tryPos, direction.getOpposite());
-            }
+        }
+    }
+
+    private void setWorkingChunk(BlockPos pos)
+    {
+        if (workingChunk == null || !workingChunk.getPos().equals(new ChunkPos(pos)))
+        {   workingChunk = WorldHelper.getChunk(level, pos);
         }
     }
 
@@ -975,6 +982,7 @@ public class HearthBlockEntity extends RandomizableContainerBlockEntity implemen
         this.pathLookup.clear();
         this.invalidPaths.clear();
         this.spreadIndex = 0;
+        this.numConnectedTransferPipes = 0;
         if (this.forceRebuild)
         {   seeSkyMap.clear();
         }
@@ -995,7 +1003,6 @@ public class HearthBlockEntity extends RandomizableContainerBlockEntity implemen
 
         this.forceRebuild = false;
         this.queuedUpdates.clear();
-        this.searchForPipeEnds(this.getBlockPos().above(), Direction.UP);
     }
 
     public List<MobEffectInstance> getEffects()

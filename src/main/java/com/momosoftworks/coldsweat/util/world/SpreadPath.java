@@ -60,21 +60,6 @@ public class SpreadPath
         return offset(pos.getX(), pos.getY(), pos.getZ());
     }
 
-    public SpreadPath spreadTo(BlockPos pos)
-    {   return this.spreadTo(pos, CSMath.getDirectionFrom(this.pos, pos));
-    }
-
-    public SpreadPath spreadTo(Direction dir)
-    {   return this.spreadTo(this.pos.relative(dir), dir);
-    }
-
-    public SpreadPath spreadTo(BlockPos pos, Direction dir)
-    {
-        SpreadPath path = new SpreadPath(pos, dir);
-        path.setOrigin(this.origin);
-        return path;
-    }
-
     public boolean withinDistance(Vec3i vector, double distance)
     {
         return distanceSq(vector.getX(), vector.getY(), vector.getZ()) < distance * distance;
