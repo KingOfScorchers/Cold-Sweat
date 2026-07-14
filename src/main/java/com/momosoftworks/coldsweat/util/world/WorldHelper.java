@@ -284,11 +284,15 @@ public abstract class WorldHelper
 
         VoxelShape shape = state.getCollisionShape(level, pos, CollisionContext.empty());
         if (shape.equals(Shapes.block())) return true;
-
                // Should it have spread here in the first place?
-        return isFullSide(shape.getFaceShape(fromDir.getOpposite()), fromDir)
+        return (fromDir != null && isFullSide(shape.getFaceShape(fromDir.getOpposite()), fromDir))
                // Can it spread out?
             || isFullSide(CSMath.flattenShape(toDir.getAxis(), shape), toDir);
+    }
+
+    public static boolean isSpreadBlocked(LevelAccessor level, BlockState state, BlockPos pos, Direction toDir)
+    {
+        return isSpreadBlocked(level, state, pos, null, toDir);
     }
 
     public static boolean isFullSide(VoxelShape shape, Direction dir)
